@@ -262,42 +262,67 @@ function addHistoryEntry(entry) {
 }
 
 // ---------- Advanced printer config: Pages-per-sheet + literal DPI ----------
-// Windows' silent-print pipeline (SumatraPDF) has no option for N-Up or DPI —
-// those live one level down, in the printer *driver's* own PrintTicket.
-// The raw PrintTicketXml approach (Set-PrintConfiguration -PrintTicketXml)
-// turned out to silently no-op on real hardware because it guesses generic
-// option names ("psk:Draft"/"psk:High") that many drivers don't recognize.
-// This uses .NET's System.Printing.PrintTicket class instead — the same
-// strongly-typed API Word/Edge use internally — which lets us set a literal
-// PageResolution(dpi, dpi) and PagesPerSheet directly against the driver.
-// Still needs Administrator rights, and still depends on the driver actually
-// supporting that exact DPI value — but we now surface the real PowerShell
-// error text back to the UI instead of a generic guess, so failures are
-// diagnosable instead of silent.
+// Konica Minolta bizhub C458 (Universal V4 PCL driver) uses custom XML namespaces
+// for PrintTicket options. Generic names like "PagesPerSheet" don't work.
+// This function builds the exact PrintTicketXML structure that Konica's driver expects:
+// - Combination feature for N-up (2in1, 4in1, etc.)
+// - psf:ParameterInit for Resolution (600dpi/1200dpi)
+// Based on actual Get-PrintConfiguration output from the user's driver.
 function applyAdvancedPrinterConfig(printerName, { pagesPerSheet, dpi }) {
   return new Promise((resolve) => {
     if ((!pagesPerSheet || pagesPerSheet <= 1) && (!dpi || dpi <= 0)) {
       return resolve({ ok: true, skipped: true });
     }
     const safeName = printerName.replace(/"/g, '`"');
-    const lines = [
-      'Add-Type -AssemblyName System.Printing',
-      '$ErrorActionPreference = "Stop"',
-      '$server = New-Object System.Printing.PrintServer',
-      `$queue = $server.GetPrintQueue("${safeName}")`,
-      '$ticket = $queue.DefaultPrintTicket'
+    
+    // Build Konica-specific PrintTicket XML
+    // Reference: User's actual PrintTicketXML from Get-PrintConfiguration
+    let xmlParts = [
+      '<?xml version="1.0"?>',
+      '<psf:PrintTicket xmlns:psf="http://schemas.microsoft.com/windows/2003/08/printing/printschemaframework"',
+      ' xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"',
+      ' xmlns:xsd="http://www.w3.org/2001/XMLSchema"',
+      ' xmlns:ns0000="http://schemas.konicaminolta.jp/windows/printing/2006/09/PrintTicketExt"',
+      ' version="1">'
     ];
+
+    // Add Combination (N-up) setting if specified
     if (pagesPerSheet && pagesPerSheet > 1) {
-      lines.push(`$ticket.PagesPerSheet = ${parseInt(pagesPerSheet, 10)}`);
-    }
-    if (dpi && dpi > 0) {
-      lines.push(
-        `$ticket.PageResolution = New-Object System.Printing.PageResolution(${parseInt(dpi, 10)}, ${parseInt(dpi, 10)})`
+      const comboValue = pagesPerSheet === 2 ? '2in1' : 
+                         pagesPerSheet === 4 ? '4in1' : 
+                         pagesPerSheet === 6 ? '6in1' : 
+                         pagesPerSheet === 9 ? '9in1' : '16in1';
+      xmlParts.push(
+        `<psf:Feature name="Combination">`,
+        `<psf:Option name="${comboValue}" selected="yes">`,
+        `</psf:Option>`,
+        `</psf:Feature>`
       );
     }
-    lines.push('$queue.DefaultPrintTicket = $ticket');
-    lines.push('$queue.Commit()');
-    const psCommand = lines.join('; ');
+
+    // Add Resolution (DPI) setting if specified
+    if (dpi && dpi > 0) {
+      // Konica uses ParameterInit with Name="Resolution" and Value attribute
+      xmlParts.push(
+        `<psf:Feature name="DeviceSettings">`,
+        `<psf:ParameterInit name="Resolution">`,
+        `<psf:Value xsi:type="xsd:string">${dpi}dpi</psf:Value>`,
+        `</psf:ParameterInit>`,
+        `</psf:Feature>`
+      );
+    }
+
+    xmlParts.push('</psf:PrintTicket>');
+    const printTicketXml = xmlParts.join('');
+
+    // PowerShell command to apply the PrintTicket
+    const psCommand = `
+      $ErrorActionPreference = "Stop";
+      $ticketXml = @"
+${printTicketXml}
+"@;
+      Set-PrintConfiguration -PrinterName "${safeName}" -PrintTicketXml $ticketXml
+    `.trim().replace(/\n/g, '; ');
 
     execFile(
       'powershell.exe',
