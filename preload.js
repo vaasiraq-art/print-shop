@@ -28,6 +28,10 @@ contextBridge.exposeInMainWorld('api', {
   clearHistory: () => ipcRenderer.invoke('clear-history'),
   getTabsState: () => ipcRenderer.invoke('get-tabs-state'),
   setContentOffset: (px) => ipcRenderer.invoke('set-content-offset', px),
+  createFilteredPdfPreview: (filePath, pageRange) => ipcRenderer.invoke('create-filtered-pdf-preview', { filePath, pageRangeText: pageRange }),
+  loadPdfInActiveTab: (filePath) => ipcRenderer.invoke('load-pdf-in-active-tab', { filePath }),
+  getTheme: () => ipcRenderer.invoke('get-theme'),
+  setTheme: (theme) => ipcRenderer.invoke('set-theme', theme),
   onTabsUpdated: (cb) => ipcRenderer.on('tabs-updated', (e, data) => cb(data)),
   onTriggerPrintActive: (cb) => ipcRenderer.on('trigger-print-active', () => cb()),
   onTriggerPrintAll: (cb) => ipcRenderer.on('trigger-print-all', () => cb())

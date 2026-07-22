@@ -2,6 +2,8 @@ const { app, BrowserWindow, BrowserView, ipcMain, dialog, Menu } = require('elec
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
+const crypto = require('crypto');
+const os = require('os');
 const Store = require('electron-store');
 const { PDFDocument } = require('pdf-lib');
 const {
@@ -11,7 +13,7 @@ const {
 } = require('pdf-to-printer');
 
 const store = new Store({
-  defaults: { presets: [], history: [], language: 'en' }
+  defaults: { presets: [], history: [], language: 'en', theme: 'dark' }
 });
 
 // Layout constants (px) — space reserved above the BrowserView for our custom UI
@@ -486,13 +488,83 @@ ipcMain.handle('open-file-dialog', async () => {
 });
 
 ipcMain.handle('open-dropped-files', async (event, filePaths) => {
+  const extractZip = require('extract-zip');
   const ids = [];
+  
   for (const filePath of filePaths) {
-    if (filePath.toLowerCase().endsWith('.pdf')) {
+    const ext = path.extname(filePath).toLowerCase();
+    
+    if (ext === '.pdf') {
+      // Regular PDF
       const id = await createTab(filePath);
       if (id) ids.push(id);
+    } else if (ext === '.zip') {
+      // Extract and process archive
+      try {
+        const tempDir = path.join(os.tmpdir(), `print-shop-${Date.now()}`);
+        await extractZip(filePath, { dir: tempDir });
+        
+        // Find all images and PDFs
+        const files = [];
+        const walkDir = async (dir) => {
+          const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+              await walkDir(fullPath);
+            } else {
+              const e = path.extname(entry.name).toLowerCase();
+              if (['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp'].includes(e)) {
+                files.push(fullPath);
+              }
+            }
+          }
+        };
+        
+        await walkDir(tempDir);
+        
+        // Separate PDFs and images
+        const pdfs = files.filter(f => f.toLowerCase().endsWith('.pdf'));
+        const images = files.filter(f => ['.jpg', '.jpeg', '.png', '.gif', '.bmp'].some(ext => f.toLowerCase().endsWith(ext)));
+        
+        // Open PDFs directly
+        for (const pdf of pdfs.sort()) {
+          const id = await createTab(pdf);
+          if (id) ids.push(id);
+        }
+        
+        // Merge images into a single PDF if any exist
+        if (images.length > 0) {
+          try {
+            const pdfDoc = await PDFDocument.create();
+            for (const imgPath of images.sort()) {
+              try {
+                const imgBuffer = await fs.promises.readFile(imgPath);
+                const image = await pdfDoc.embedJpeg(imgBuffer).catch(() => pdfDoc.embedPng(imgBuffer));
+                const page = pdfDoc.addPage([595, 842]); // A4
+                page.drawImage(image, { x: 0, y: 0, width: 595, height: 842 });
+              } catch (e) {
+                console.error(`Error processing image ${imgPath}:`, e);
+              }
+            }
+            const pdfBuffer = await pdfDoc.save();
+            const mergedPath = path.join(os.tmpdir(), `print-shop-merged-${Date.now()}.pdf`);
+            await fs.promises.writeFile(mergedPath, pdfBuffer);
+            const id = await createTab(mergedPath, { title: `${path.basename(filePath, '.zip')} (merged images)` });
+            if (id) ids.push(id);
+          } catch (e) {
+            console.error('Error merging images:', e);
+          }
+        }
+      } catch (e) {
+        console.error('Error extracting ZIP:', e);
+      }
+    } else if (['.jpg', '.jpeg', '.png', '.gif', '.bmp'].some(img => ext === img)) {
+      // Single image - log that batch merge is available via ZIP
+      console.log(`Image file ${filePath} - use ZIP for batch processing`);
     }
   }
+  
   return ids;
 });
 
@@ -571,10 +643,82 @@ ipcMain.handle('set-language', (event, lang) => {
   return lang;
 });
 
+ipcMain.handle('get-theme', () => store.get('theme') || 'dark');
+ipcMain.handle('set-theme', (event, theme) => {
+  store.set('theme', theme);
+  return theme;
+});
+
 ipcMain.handle('get-tabs-state', () => ({
   tabs: serializeTabs(),
   totalPages: getTotalPages()
 }));
+
+// ---------- Page filtering for preview ----------
+// Creates a filtered PDF with only selected pages and returns its path
+async function createFilteredPdfPreview(filePath, pageRangeText) {
+  try {
+    const buffer = await fs.promises.readFile(filePath);
+    const doc = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const totalPages = doc.getPageCount();
+    
+    // Parse page range (e.g., "1,3,5-7" -> [1,3,5,6,7])
+    const pages = new Set();
+    for (const part of pageRangeText.split(',')) {
+      const trimmed = part.trim();
+      if (!trimmed) continue;
+      if (trimmed.includes('-')) {
+        const [start, end] = trimmed.split('-').map(s => parseInt(s.trim(), 10));
+        for (let i = start; i <= end && i <= totalPages; i++) {
+          pages.add(i - 1); // 0-indexed
+        }
+      } else {
+        const page = parseInt(trimmed, 10);
+        if (page > 0 && page <= totalPages) pages.add(page - 1);
+      }
+    }
+    
+    if (pages.size === 0) return null;
+    
+    // Create new doc with only selected pages
+    const newDoc = await PDFDocument.create();
+    const sortedPages = Array.from(pages).sort((a, b) => a - b);
+    
+    for (const pageIdx of sortedPages) {
+      const [copiedPage] = await newDoc.copyPages(doc, [pageIdx]);
+      newDoc.addPage(copiedPage);
+    }
+    
+    const filteredBuffer = await newDoc.save();
+    
+    // Save to temp file
+    const tempDir = os.tmpdir();
+    const hash = crypto.createHash('md5').update(filePath + pageRangeText).digest('hex');
+    const tempPath = path.join(tempDir, `print-shop-preview-${hash}.pdf`);
+    
+    await fs.promises.writeFile(tempPath, filteredBuffer);
+    return tempPath;
+  } catch (e) {
+    console.error('Error creating filtered PDF:', e);
+    return null;
+  }
+}
+
+ipcMain.handle('create-filtered-pdf-preview', async (event, { filePath, pageRangeText }) => {
+  if (!pageRangeText || !pageRangeText.trim()) return { ok: false, error: 'Invalid page range' };
+  const result = await createFilteredPdfPreview(filePath, pageRangeText);
+  return result ? { ok: true, path: result } : { ok: false, error: 'Failed to create preview' };
+});
+
+ipcMain.handle('load-pdf-in-active-tab', async (event, { filePath }) => {
+  if (!activeTabId) return { ok: false, error: 'No active tab' };
+  const tab = tabs.get(activeTabId);
+  if (!tab) return { ok: false, error: 'Tab not found' };
+  
+  const fileUrl = `file:///${filePath.replace(/\\/g, '/')}`;
+  tab.view.webContents.loadURL(fileUrl);
+  return { ok: true };
+});
 
 app.whenReady().then(createMainWindow);
 
