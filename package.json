@@ -22,8 +22,25 @@
   "build": {
     "appId": "com.vaas.printshop",
     "productName": "Print Shop",
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*"
+    ],
     "win": {
-      "target": "nsis",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "certificateFile": null,
+      "certificatePassword": null,
+      "signingHashAlgorithms": ["sha256"],
       "fileAssociations": [
         {
           "ext": "pdf",
@@ -35,15 +52,13 @@
     },
     "nsis": {
       "oneClick": false,
-      "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "shortcutName": "Print Shop"
     },
-    "files": [
-      "main.js",
-      "preload.js",
-      "src/**/*"
-    ]
+    "portable": {
+      "artifactName": "${productName}-Setup.${ext}"
+    }
   }
 }
