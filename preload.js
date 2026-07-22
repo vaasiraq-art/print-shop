@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('api', {
   createFilteredPdfPreview: (filePath, pageRange) => ipcRenderer.invoke('create-filtered-pdf-preview', { filePath, pageRangeText: pageRange }),
   createNupPreview: (args) => ipcRenderer.invoke('create-nup-preview', args),
   loadPdfInActiveTab: (filePath) => ipcRenderer.invoke('load-pdf-in-active-tab', { filePath }),
+  loadOriginalInActiveTab: () => ipcRenderer.invoke('load-original-in-active-tab'),
   verbosePrint: (payload) => ipcRenderer.invoke('verbose-print', payload),
   getTheme: () => ipcRenderer.invoke('get-theme'),
   setTheme: (theme) => ipcRenderer.invoke('set-theme', theme),
