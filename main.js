@@ -293,7 +293,9 @@ function closeTab(id) {
 async function duplicateTab(id) {
   const tab = tabs.get(id);
   if (!tab) return null;
-  return createTab(tab.filePath, { title: tab.title, printer: tab.printer });
+  // Prefer duplicating the original source file, not a temporary preview
+  const source = tab.originalFilePath || tab.filePath;
+  return createTab(source, { title: tab.title, printer: tab.printer });
 }
 
 function toggleLock(id) {
@@ -467,17 +469,54 @@ async function printTab(id, options) {
   }
   printOptions.copies = Math.max(1, parseInt(options.copies, 10) || 1);
 
+  // Decide which file to print: prefer original source if current tab is a preview
+  const pathToPrint = (tab.isPreview && tab.originalFilePath) ? tab.originalFilePath : tab.filePath;
+  const pagesCount = tab.pageCount || 0;
+
   // Log attempt
   try {
-    fs.appendFileSync(PRINT_LOG_PATH, `${new Date().toISOString()} - Printing ${tab.title} to ${printerName} with options ${JSON.stringify(printOptions)}\n`);
+    fs.appendFileSync(PRINT_LOG_PATH, `${new Date().toISOString()} - Printing ${tab.title} to ${printerName} (path: ${pathToPrint}) with options ${JSON.stringify(printOptions)}\n`);
   } catch (e) {}
 
+  // If document is very large, print in batches to avoid driver/app memory spikes
+  const SPLIT_PRINT_THRESHOLD = 500; // pages above this use batched printing
+  const PRINT_BATCH_SIZE = 200;
+
+  // If user requested a custom page selection, respect it and do not auto-split
+  const userSpecifiedPages = (options.pagesMode === 'custom' && options.pageRangeText);
+
+  if (!userSpecifiedPages && pagesCount > SPLIT_PRINT_THRESHOLD) {
+    try {
+      for (let start = 1; start <= pagesCount; start += PRINT_BATCH_SIZE) {
+        const end = Math.min(pagesCount, start + PRINT_BATCH_SIZE - 1);
+        const batchOptions = Object.assign({}, printOptions, { pages: `${start}-${end}` });
+        fs.appendFileSync(PRINT_LOG_PATH, `${new Date().toISOString()} - Printing batch ${start}-${end}\n`);
+        await printPdfSilently(pathToPrint, batchOptions);
+        // small pause between batches to give spooler time
+        await new Promise(r => setTimeout(r, 300));
+      }
+      addHistoryEntry({
+        fileName: tab.title,
+        printer: printerName,
+        pages: pagesCount,
+        copies: printOptions.copies
+      });
+      fs.appendFileSync(PRINT_LOG_PATH, `${new Date().toISOString()} - batched print succeeded\n`);
+      return { ok: true, advancedWarning, batched: true };
+    } catch (e) {
+      const errMsg = String(e && e.message ? e.message : e);
+      fs.appendFileSync(PRINT_LOG_PATH, `${new Date().toISOString()} - batched print failed: ${errMsg}\n`);
+      // Fall through to attempt single-shot fallback below
+    }
+  }
+
+  // Single-shot print path (original behavior)
   try {
-    await printPdfSilently(tab.filePath, printOptions);
+    await printPdfSilently(pathToPrint, printOptions);
     addHistoryEntry({
       fileName: tab.title,
       printer: printerName,
-      pages: tab.pageCount,
+      pages: pagesCount,
       copies: printOptions.copies
     });
     fs.appendFileSync(PRINT_LOG_PATH, `${new Date().toISOString()} - printPdfSilently succeeded\n`);
@@ -485,10 +524,23 @@ async function printTab(id, options) {
   } catch (e) {
     const errMsg = String(e && e.message ? e.message : e);
     fs.appendFileSync(PRINT_LOG_PATH, `${new Date().toISOString()} - printPdfSilently failed: ${errMsg}\n`);
-    // Primary print method failed — attempt fallback using BrowserView's print
     console.error('pdf-to-printer failed:', errMsg);
+
+    // Primary print method failed — attempt fallback using BrowserView's print
     if (tab.view && tab.view.webContents) {
       try {
+        // If tab is showing a preview but we want to print original, try to load original into the view first
+        if (tab.isPreview && tab.originalFilePath) {
+          try {
+            await tab.view.webContents.loadURL('file://' + encodeURI(tab.originalFilePath.replace(/\\/g, '/')));
+            // give the renderer a moment to settle
+            await new Promise(r => setTimeout(r, 200));
+          } catch (eLoad) {
+            // ignore load failure and attempt print anyway
+            fs.appendFileSync(PRINT_LOG_PATH, `${new Date().toISOString()} - failed to load original into view for fallback: ${String(eLoad)}\n`);
+          }
+        }
+
         const printResult = await new Promise((resolve) => {
           tab.view.webContents.print({ silent: true, deviceName: printerName }, (success, failureReason) => {
             resolve({ success, failureReason });
@@ -498,7 +550,7 @@ async function printTab(id, options) {
           addHistoryEntry({
             fileName: tab.title,
             printer: printerName,
-            pages: tab.pageCount,
+            pages: pagesCount,
             copies: printOptions.copies
           });
           fs.appendFileSync(PRINT_LOG_PATH, `${new Date().toISOString()} - webContents.print succeeded\n`);
@@ -971,8 +1023,15 @@ ipcMain.handle('load-pdf-in-active-tab', async (event, { filePath }) => {
   if (!tab) return { ok: false, error: 'Tab not found' };
 
   // Update the logical filePath for this tab so printing uses the shown document
+  // If this is a temporary preview (nup/preview/merged) keep originalFilePath unchanged;
+  // otherwise, set originalFilePath when it's not already set.
+  const base = path.basename(filePath || '');
+  const isTempPreview = /print-shop-(nup|preview|merged)-/.test(base);
+  if (!isTempPreview && !tab.originalFilePath) {
+    tab.originalFilePath = filePath;
+  }
   tab.filePath = filePath;
-  tab.isPreview = true;
+  tab.isPreview = Boolean(isTempPreview);
 
   const fileUrl = `file:///${filePath.replace(/\\/g, '/')}`;
   try {
