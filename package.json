@@ -16,7 +16,8 @@
   "dependencies": {
     "electron-store": "^8.2.0",
     "pdf-lib": "^1.17.1",
-    "pdf-to-printer": "^5.8.0"
+    "pdf-to-printer": "^5.8.0",
+    "extract-zip": "^2.0.1"
   },
   "build": {
     "appId": "com.vaas.printshop",

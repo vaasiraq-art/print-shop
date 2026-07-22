@@ -194,6 +194,19 @@ el('pages-range-input').addEventListener('input', () => {
   if (!activeTabId) return;
   tabOptions[activeTabId].pageRangeText = el('pages-range-input').value;
 });
+el('pages-range-input').addEventListener('change', async () => {
+  if (!activeTabId) return;
+  const range = el('pages-range-input').value.trim();
+  if (range) {
+    const tab = currentTabs.find(t => t.id === activeTabId);
+    if (tab) {
+      const result = await api.createFilteredPdfPreview(tab.filePath || tab.id, range);
+      if (result.ok) {
+        api.loadPdfInActiveTab(result.path);
+      }
+    }
+  }
+});
 el('scale-mode-select').addEventListener('change', () => {
   const mode = el('scale-mode-select').value;
   el('scale-custom-input').classList.toggle('hidden', mode !== 'custom');
@@ -390,12 +403,27 @@ el('language-select').addEventListener('change', async () => {
   await refreshPrinters(el('printer-select').value);
 });
 
+// ---------- Theme switching ----------
+function setTheme(themeName) {
+  document.body.setAttribute('data-theme', themeName);
+  api.setTheme(themeName);
+}
+
+el('theme-select').addEventListener('change', () => {
+  setTheme(el('theme-select').value);
+});
+
 // ---------- Init ----------
 
 (async function init() {
   currentLang = (await api.getLanguage()) || 'en';
   el('language-select').value = currentLang;
   applyTranslations(currentLang);
+
+  // Load and apply theme
+  const savedTheme = (await api.getTheme()) || 'dark';
+  el('theme-select').value = savedTheme;
+  setTheme(savedTheme);
 
   const state = await api.getTabsState();
   currentTabs = state.tabs;
