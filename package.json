@@ -1,0 +1,48 @@
+{
+  "name": "print-shop",
+  "version": "1.0.0",
+  "description": "Print Shop - Multi-tab PDF printing tool for print room management",
+  "main": "main.js",
+  "author": "Vaas",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0",
+    "pdf-lib": "^1.17.1",
+    "pdf-to-printer": "^5.8.0"
+  },
+  "build": {
+    "appId": "com.vaas.printshop",
+    "productName": "Print Shop",
+    "win": {
+      "target": "nsis",
+      "fileAssociations": [
+        {
+          "ext": "pdf",
+          "name": "PDF Document",
+          "description": "PDF Document",
+          "role": "Editor"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*"
+    ]
+  }
+}
