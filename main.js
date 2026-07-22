@@ -24,11 +24,15 @@ let extraTopOffset = 0; // grows when the "more settings" row is expanded, set v
 const LARGE_FILE_WARNING_PAGES = 50;
 
 let mainWindow = null;
-/** @type {Map<string, {view: BrowserView, filePath: string, title: string, pageCount: number, printer: string|null, locked: boolean, bw: boolean}>} */
+/** @type {Map<string, {view: BrowserView|null, filePath: string, title: string, pageCount: number, printer: string|null, locked: boolean, bw: boolean, pinned?: boolean, hidden?: boolean, lastAccess?: number}>} */
 const tabs = new Map();
 let activeTabId = null;
 let tabCounter = 0;
 let pendingFileToOpen = null; // a .pdf passed on the command line before the window exists
+
+// Limit number of live BrowserViews to avoid high memory use. Other tabs are
+// lazy-loaded when activated. Tune as needed.
+const MAX_ACTIVE_VIEWS = 3;
 
 // ---------- Single instance / "open with" support ----------
 // When the app is set as the default PDF handler, Windows launches a new
@@ -98,13 +102,18 @@ function sendToRenderer(channel, payload) {
 }
 
 function serializeTabs() {
+  // Include filePath and originalFilePath so renderer can decide which tabs to show
   return Array.from(tabs.entries()).map(([id, t]) => ({
     id,
     title: t.title,
+    filePath: t.filePath || null,
+    originalFilePath: t.originalFilePath || null,
     pageCount: t.pageCount,
     printer: t.printer,
     locked: t.locked,
     bw: t.bw,
+    pinned: !!t.pinned,
+    hidden: !!t.hidden,
     active: id === activeTabId
   }));
 }
@@ -117,20 +126,32 @@ function broadcastTabs() {
 // building pdf-lib's full object graph. This is what previously froze the
 // whole app ("Not Responding") on big PDFs — it ran on the Main process,
 // which is single-threaded, so any heavy synchronous work blocks the UI.
-// Now it also runs *after* the tab is already visible, never before.
+
 async function getPageCountFast(filePath) {
-  try {
-    const buffer = await fs.promises.readFile(filePath);
-    const text = buffer.toString('latin1');
-    const matches = text.match(/\/Type\s*\/Page[^s]/g);
-    if (matches && matches.length > 0) return matches.length;
-    // Fallback for PDFs with compressed cross-reference streams where the
-    // regex scan can't see page objects directly.
-    const doc = await PDFDocument.load(buffer, { ignoreEncryption: true });
-    return doc.getPageCount();
-  } catch (e) {
-    return 0;
-  }
+  // Offload counting to a child Node process that streams the file so the
+  // main event loop isn't blocked by large-memory allocations or heavy regex.
+  return new Promise((resolve) => {
+    const workerScript = path.join(__dirname, 'pageCountWorker.js');
+    execFile(process.execPath, [workerScript, filePath], { timeout: 15000 }, (err, stdout) => {
+      if (err) {
+        // Fallback: try lightweight pdf-lib method
+        fs.promises.readFile(filePath).then((buffer) => {
+          PDFDocument.load(buffer, { ignoreEncryption: true }).then((doc) => resolve(doc.getPageCount())).catch(() => resolve(0));
+        }).catch(() => resolve(0));
+        return;
+      }
+      try {
+        const parsed = JSON.parse(stdout);
+        if (parsed && typeof parsed.count === 'number' && parsed.count > 0) return resolve(parsed.count);
+        // fallback
+        fs.promises.readFile(filePath).then((buffer) => {
+          PDFDocument.load(buffer, { ignoreEncryption: true }).then((doc) => resolve(doc.getPageCount())).catch(() => resolve(0));
+        }).catch(() => resolve(0));
+      } catch (e) {
+        resolve(0);
+      }
+    });
+  });
 }
 
 async function createTab(filePath, options = {}) {
@@ -157,14 +178,19 @@ async function createTab(filePath, options = {}) {
     }
   }
 
+  // Store both original source path and current filePath (current may be a preview)
   tabs.set(id, {
     view,
+    originalFilePath: filePath,
     filePath,
     title,
     pageCount: 0, // filled in asynchronously below, off the critical path
     printer: defaultPrinterName,
     locked: false,
-    bw: false
+    bw: false,
+    pinned: false,
+    hidden: false,
+    lastAccess: Date.now()
   });
 
   mainWindow.addBrowserView(view);
@@ -190,12 +216,53 @@ async function switchTab(id) {
   const tab = tabs.get(id);
   if (!tab) return;
 
+  // Remove current view if present
   if (activeTabId && tabs.has(activeTabId)) {
-    mainWindow.removeBrowserView(tabs.get(activeTabId).view);
+    const prev = tabs.get(activeTabId);
+    if (prev && prev.view) {
+      try {
+        mainWindow.removeBrowserView(prev.view);
+      } catch (e) {}
+    }
   }
 
   activeTabId = id;
-  mainWindow.addBrowserView(tab.view);
+
+  // If new tab doesn't have an active BrowserView, create and load it lazily.
+  if (!tab.view) {
+    // Enforce max active views by evicting least recently used non-active view
+    const activeViews = Array.from(tabs.values()).filter(t => t.view);
+    if (activeViews.length >= MAX_ACTIVE_VIEWS) {
+      // find LRU view that's not pinned and not the tab we're activating
+      let lruId = null; let lruTime = Infinity;
+      for (const [tid, tdata] of tabs.entries()) {
+        if (tdata.view && tid !== id && !tdata.pinned) {
+          const at = tdata.lastAccess || 0;
+          if (at < lruTime) { lruTime = at; lruId = tid; }
+        }
+      }
+      if (lruId) {
+        const evicted = tabs.get(lruId);
+        try { mainWindow.removeBrowserView(evicted.view); } catch (e) {}
+        try { evicted.view.webContents.destroy(); } catch (e) {}
+        evicted.view = null;
+      }
+    }
+
+    const view = new BrowserView({ webPreferences: { plugins: true, contextIsolation: true, backgroundThrottling: true } });
+    tab.view = view;
+    mainWindow.addBrowserView(view);
+    // Load file URL
+    try {
+      view.webContents.loadURL('file://' + encodeURI(tab.filePath.replace(/\\/g, '/')));
+    } catch (e) {
+      console.error('Failed to load PDF in BrowserView:', e);
+    }
+  } else {
+    try { mainWindow.addBrowserView(tab.view); } catch (e) {}
+  }
+
+  tab.lastAccess = Date.now();
   layoutActiveView();
   broadcastTabs();
 }
@@ -204,8 +271,12 @@ function closeTab(id) {
   const tab = tabs.get(id);
   if (!tab || tab.locked) return false;
 
-  mainWindow.removeBrowserView(tab.view);
-  tab.view.webContents.destroy();
+  try {
+    mainWindow.removeBrowserView(tab.view);
+  } catch (e) {}
+  try {
+    tab.view.webContents.destroy();
+  } catch (e) {}
   tabs.delete(id);
 
   if (activeTabId === id) {
@@ -229,6 +300,27 @@ function toggleLock(id) {
   const tab = tabs.get(id);
   if (!tab) return;
   tab.locked = !tab.locked;
+  broadcastTabs();
+}
+
+function togglePin(id) {
+  const tab = tabs.get(id);
+  if (!tab) return;
+  tab.pinned = !tab.pinned;
+  broadcastTabs();
+}
+
+function hideTab(id) {
+  const tab = tabs.get(id);
+  if (!tab) return;
+  tab.hidden = true;
+  // If active, switch to next visible tab
+  if (activeTabId === id) {
+    activeTabId = null;
+    for (const [tid, t] of tabs.entries()) {
+      if (!t.hidden) { switchTab(tid); break; }
+    }
+  }
   broadcastTabs();
 }
 
@@ -341,6 +433,8 @@ ${printTicketXml}
   });
 }
 
+const PRINT_LOG_PATH = path.join(os.tmpdir(), 'print-shop-print.log');
+
 async function printTab(id, options) {
   const tab = tabs.get(id);
   if (!tab) return { ok: false, error: 'Tab not found' };
@@ -373,6 +467,11 @@ async function printTab(id, options) {
   }
   printOptions.copies = Math.max(1, parseInt(options.copies, 10) || 1);
 
+  // Log attempt
+  try {
+    fs.appendFileSync(PRINT_LOG_PATH, `${new Date().toISOString()} - Printing ${tab.title} to ${printerName} with options ${JSON.stringify(printOptions)}\n`);
+  } catch (e) {}
+
   try {
     await printPdfSilently(tab.filePath, printOptions);
     addHistoryEntry({
@@ -381,11 +480,52 @@ async function printTab(id, options) {
       pages: tab.pageCount,
       copies: printOptions.copies
     });
+    fs.appendFileSync(PRINT_LOG_PATH, `${new Date().toISOString()} - printPdfSilently succeeded\n`);
     return { ok: true, advancedWarning };
   } catch (e) {
-    return { ok: false, error: String(e && e.message ? e.message : e) };
+    const errMsg = String(e && e.message ? e.message : e);
+    fs.appendFileSync(PRINT_LOG_PATH, `${new Date().toISOString()} - printPdfSilently failed: ${errMsg}\n`);
+    // Primary print method failed — attempt fallback using BrowserView's print
+    console.error('pdf-to-printer failed:', errMsg);
+    if (tab.view && tab.view.webContents) {
+      try {
+        const printResult = await new Promise((resolve) => {
+          tab.view.webContents.print({ silent: true, deviceName: printerName }, (success, failureReason) => {
+            resolve({ success, failureReason });
+          });
+        });
+        if (printResult && printResult.success) {
+          addHistoryEntry({
+            fileName: tab.title,
+            printer: printerName,
+            pages: tab.pageCount,
+            copies: printOptions.copies
+          });
+          fs.appendFileSync(PRINT_LOG_PATH, `${new Date().toISOString()} - webContents.print succeeded\n`);
+          return { ok: true, advancedWarning, fallback: 'webcontents-print' };
+        } else {
+          const reason = (printResult && printResult.failureReason) || 'unknown';
+          fs.appendFileSync(PRINT_LOG_PATH, `${new Date().toISOString()} - webContents.print failed: ${reason}\n`);
+          return { ok: false, error: `pdf-to-printer failed: ${errMsg}; webContents.print failed: ${reason}` };
+        }
+      } catch (e2) {
+        fs.appendFileSync(PRINT_LOG_PATH, `${new Date().toISOString()} - webContents.print threw: ${String(e2)}\n`);
+        return { ok: false, error: `pdf-to-printer failed: ${errMsg}; fallback error: ${String(e2)}` };
+      }
+    }
+    return { ok: false, error: errMsg };
   }
 }
+
+// Diagnostic: list system printers and return statuses
+ipcMain.handle('diagnose-printers', async () => {
+  try {
+    const [printers, statuses] = await Promise.all([getSystemPrinters(), getPrinterStatuses()]);
+    return { ok: true, printers: printers.map(p => ({ name: p.name, displayName: p.name, status: statuses[p.name] || 'unknown' })) };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
 
 // ---------- Printer status (Ready / Busy / Offline) ----------
 // Windows has no universal ink-level API (that's vendor/driver specific),
@@ -585,6 +725,8 @@ ipcMain.handle('switch-tab', async (event, id) => switchTab(id));
 ipcMain.handle('close-tab', async (event, id) => closeTab(id));
 ipcMain.handle('duplicate-tab', async (event, id) => duplicateTab(id));
 ipcMain.handle('toggle-tab-lock', async (event, id) => toggleLock(id));
+ipcMain.handle('toggle-tab-pin', async (event, id) => togglePin(id));
+ipcMain.handle('hide-tab', async (event, id) => hideTab(id));
 ipcMain.handle('set-tab-bw', async (event, { id, bw }) => setTabBlackAndWhite(id, bw));
 
 ipcMain.handle('set-tab-printer', async (event, { id, printer }) => {
@@ -599,6 +741,16 @@ ipcMain.handle('print-tab', async (event, { id, options }) => {
     return { ok: false, needsConfirmation: true, pageCount: tab.pageCount };
   }
   return printTab(id, options);
+});
+
+// Verbose print for diagnostics: returns full error message and stack if any
+ipcMain.handle('verbose-print', async (event, { id, options }) => {
+  try {
+    const result = await printTab(id, options);
+    return { ok: result.ok, result };
+  } catch (e) {
+    return { ok: false, error: String(e), stack: e && e.stack };
+  }
 });
 
 ipcMain.handle('print-all-tabs', async (event, jobs) => {
@@ -710,13 +862,157 @@ ipcMain.handle('create-filtered-pdf-preview', async (event, { filePath, pageRang
   return result ? { ok: true, path: result } : { ok: false, error: 'Failed to create preview' };
 });
 
+// ---------- N-up (pages-per-sheet) preview ----------
+// Compose N source pages onto a single A4 page for preview using pdf-lib
+async function createNupPreview(filePath, pagesPerSheet, pageRangeText = null) {
+  try {
+    const buffer = await fs.promises.readFile(filePath);
+    const srcDoc = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const totalPages = srcDoc.getPageCount();
+
+    // Determine pages to include
+    let pagesToInclude = [];
+    if (pageRangeText && pageRangeText.trim()) {
+      const pages = new Set();
+      for (const part of pageRangeText.split(',')) {
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+        if (trimmed.includes('-')) {
+          const [start, end] = trimmed.split('-').map(s => parseInt(s.trim(), 10));
+          for (let i = start; i <= end && i <= totalPages; i++) pages.add(i - 1);
+        } else {
+          const page = parseInt(trimmed, 10);
+          if (page > 0 && page <= totalPages) pages.add(page - 1);
+        }
+      }
+      pagesToInclude = Array.from(pages).sort((a,b) => a-b);
+    } else {
+      pagesToInclude = Array.from({length: totalPages}, (_,i) => i);
+    }
+
+    if (pagesToInclude.length === 0) return null;
+
+    // Guard for very large docs — avoid composing thousands of pages into memory
+    const MAX_PREVIEW_PAGES = 500; // configurable
+    if (pagesToInclude.length > MAX_PREVIEW_PAGES) {
+      // Signal caller that document is too large for N-up preview
+      return { error: 'too_large', totalPages };
+    }
+
+    const newDoc = await PDFDocument.create();
+
+    // A4 dimensions in points (72 DPI): 595 x 842
+    const PAGE_WIDTH = 595;
+    const PAGE_HEIGHT = 842;
+
+    // Grid for pagesPerSheet: support 1,2,4,6,9,16
+    const gridMap = {
+      1: [1,1],
+      2: [2,1],
+      4: [2,2],
+      6: [3,2],
+      9: [3,3],
+      16: [4,4]
+    };
+    const grid = gridMap[pagesPerSheet] || [1,1];
+    const cols = grid[0], rows = grid[1];
+
+    const slotWidth = PAGE_WIDTH / cols;
+    const slotHeight = PAGE_HEIGHT / rows;
+
+    // Copy pages we need into the new doc as embedded pages
+    const srcPages = await newDoc.copyPages(srcDoc, pagesToInclude);
+
+    // Create pages grouping
+    for (let i = 0; i < srcPages.length; i += cols*rows) {
+      const page = newDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+      const chunk = srcPages.slice(i, i + cols*rows);
+      for (let j = 0; j < chunk.length; j++) {
+        const srcPage = chunk[j];
+        // Calculate position
+        const col = j % cols;
+        const row = Math.floor(j / cols);
+        const x = col * slotWidth;
+        const y = PAGE_HEIGHT - (row + 1) * slotHeight; // PDF origin bottom-left
+
+        // Embed the page as XObject and draw scaled to fit slot while preserving aspect
+        const embedded = await newDoc.embedPage(srcPage);
+        const { width: sw, height: sh } = embedded.scale(1);
+        const xScale = Math.min(slotWidth / sw, slotHeight / sh);
+        const drawWidth = sw * xScale;
+        const drawHeight = sh * xScale;
+        const dx = x + (slotWidth - drawWidth) / 2;
+        const dy = y + (slotHeight - drawHeight) / 2;
+        page.drawPage(embedded, { x: dx, y: dy, xScale: xScale, yScale: xScale });
+      }
+    }
+
+    const outBuffer = await newDoc.save();
+    const tempPath = path.join(os.tmpdir(), `print-shop-nup-${Date.now()}-${pagesPerSheet}.pdf`);
+    await fs.promises.writeFile(tempPath, outBuffer);
+    return tempPath;
+  } catch (e) {
+    console.error('Error creating n-up preview:', e);
+    return null;
+  }
+}
+
+ipcMain.handle('create-nup-preview', async (event, { filePath, pagesPerSheet, pageRangeText }) => {
+  if (!filePath) return { ok: false, error: 'No file' };
+  const result = await createNupPreview(filePath, parseInt(pagesPerSheet,10) || 1, pageRangeText || null);
+  if (!result) return { ok: false, error: 'Failed to create n-up preview' };
+  if (result.error === 'too_large') return { ok: false, error: 'too_large', totalPages: result.totalPages };
+  return { ok: true, path: result };
+});
+
 ipcMain.handle('load-pdf-in-active-tab', async (event, { filePath }) => {
   if (!activeTabId) return { ok: false, error: 'No active tab' };
   const tab = tabs.get(activeTabId);
   if (!tab) return { ok: false, error: 'Tab not found' };
-  
+
+  // Update the logical filePath for this tab so printing uses the shown document
+  tab.filePath = filePath;
+  tab.isPreview = true;
+
   const fileUrl = `file:///${filePath.replace(/\\/g, '/')}`;
-  tab.view.webContents.loadURL(fileUrl);
+  try {
+    if (!tab.view) {
+      // Create a view if none (lazy) to show the preview
+      const view = new BrowserView({ webPreferences: { plugins: true, contextIsolation: true, backgroundThrottling: true } });
+      tab.view = view;
+      mainWindow.addBrowserView(view);
+      layoutActiveView();
+    }
+    await tab.view.webContents.loadURL(fileUrl);
+  } catch (e) {
+    console.error('Failed to load PDF in active tab:', e);
+    return { ok: false, error: String(e) };
+  }
+  broadcastTabs();
+  return { ok: true };
+});
+
+ipcMain.handle('load-original-in-active-tab', async () => {
+  if (!activeTabId) return { ok: false, error: 'No active tab' };
+  const tab = tabs.get(activeTabId);
+  if (!tab) return { ok: false, error: 'Tab not found' };
+  if (!tab.originalFilePath) return { ok: false, error: 'No original file saved' };
+  tab.filePath = tab.originalFilePath;
+  tab.isPreview = false;
+  const fileUrl = `file:///${tab.filePath.replace(/\\/g, '/')}`;
+  try {
+    if (!tab.view) {
+      const view = new BrowserView({ webPreferences: { plugins: true, contextIsolation: true, backgroundThrottling: true } });
+      tab.view = view;
+      mainWindow.addBrowserView(view);
+      layoutActiveView();
+    }
+    await tab.view.webContents.loadURL(fileUrl);
+  } catch (e) {
+    console.error('Failed to load original PDF in active tab:', e);
+    return { ok: false, error: String(e) };
+  }
+  broadcastTabs();
   return { ok: true };
 });
 

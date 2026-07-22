@@ -58,13 +58,19 @@ function showTabContextMenu(x, y, tab) {
   menu.style.left = x + 'px';
   menu.style.top = y + 'px';
   menu.classList.remove('hidden');
-  menu.querySelector('[data-action="lock"]').textContent =
-    (TRANSLATIONS[currentLang] || TRANSLATIONS.en)[tab.locked ? 'unlockTab' : 'lockTab'] ||
-    (tab.locked ? 'Unlock tab' : 'Lock tab');
+
+  // Update dynamic labels
+  const dict = TRANSLATIONS[currentLang] || TRANSLATIONS.en;
+  const pinLabel = tab.pinned ? (dict.unpinTab || 'Unpin tab') : (dict.pinTab || 'Pin tab');
+  const lockLabel = tab.locked ? (dict.unlockTab || 'Unlock tab') : (dict.lockTab || 'Lock tab');
+  menu.querySelector('[data-action="pin"]').textContent = pinLabel;
+  menu.querySelector('[data-action="lock"]').textContent = lockLabel;
 
   const onClick = (e) => {
     const action = e.target.getAttribute('data-action');
     if (action === 'duplicate') api.duplicateTab(tab.id);
+    if (action === 'pin') api.toggleTabPin(tab.id);
+    if (action === 'hide') api.hideTab(tab.id);
     if (action === 'lock') api.toggleTabLock(tab.id);
     if (action === 'close' && !tab.locked) {
       api.closeTab(tab.id);
@@ -182,6 +188,34 @@ el('color-select').addEventListener('change', () => {
 bindOption('paper-size-select', 'paperSize');
 bindOption('pages-per-sheet-select', 'pagesPerSheet', (v) => parseInt(v, 10));
 bindOption('quality-select', 'dpi', (v) => parseInt(v, 10) || 0);
+
+// Generate N-up preview when pages-per-sheet changes
+el('pages-per-sheet-select').addEventListener('change', async () => {
+  if (!activeTabId) return;
+  const pagesPer = parseInt(el('pages-per-sheet-select').value, 10) || 1;
+  const opts = tabOptions[activeTabId] || defaultOptions();
+  const tab = currentTabs.find(t => t.id === activeTabId);
+  if (!tab || !tab.filePath) return;
+  if (pagesPer > 1) {
+    const pageRange = opts.pagesMode === 'custom' ? opts.pageRangeText : null;
+    // Use originalFilePath if available to avoid nesting previews
+    const source = tab.originalFilePath || tab.filePath;
+    const res = await api.createNupPreview({ filePath: source, pagesPerSheet: pagesPer, pageRangeText: pageRange });
+    if (res.ok) {
+      await api.loadPdfInActiveTab(res.path);
+      showToast('N-up preview generated');
+    } else if (res.error === 'too_large') {
+      showToast('Document too large for N-up preview; preview skipped. N-up will be applied at print time.');
+      // Keep original file in view
+      await api.loadOriginalInActiveTab();
+    } else {
+      showToast('Failed to generate N-up preview');
+    }
+  } else {
+    // reload original file
+    await api.loadOriginalInActiveTab();
+  }
+});
 bindOption('scale-custom-input', 'scaleCustom', (v) => parseInt(v, 10) || 100);
 bindOption('duplex-flip-select', 'duplexFlip');
 
@@ -280,9 +314,15 @@ async function printActiveTab(confirmedLarge = false) {
     showConfirmModal(result.pageCount, () => printActiveTab(true));
     return;
   }
+  if (!result.ok) {
+    showToast(`Print failed: ${result.error || 'Unknown error'}`);
+    return;
+  }
   if (result.advancedWarning) {
     const base = (TRANSLATIONS[currentLang] || TRANSLATIONS.en).advancedConfigWarning;
     showToast(`${base}\n${result.advancedWarning}`);
+  } else {
+    showToast('Print job sent');
   }
 }
 
