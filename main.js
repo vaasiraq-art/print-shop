@@ -293,7 +293,9 @@ function closeTab(id) {
 async function duplicateTab(id) {
   const tab = tabs.get(id);
   if (!tab) return null;
-  return createTab(tab.filePath, { title: tab.title, printer: tab.printer });
+  // Prefer duplicating the original source file, not a temporary preview
+  const source = tab.originalFilePath || tab.filePath;
+  return createTab(source, { title: tab.title, printer: tab.printer });
 }
 
 function toggleLock(id) {
@@ -971,8 +973,15 @@ ipcMain.handle('load-pdf-in-active-tab', async (event, { filePath }) => {
   if (!tab) return { ok: false, error: 'Tab not found' };
 
   // Update the logical filePath for this tab so printing uses the shown document
+  // If this is a temporary preview (nup/preview/merged) keep originalFilePath unchanged;
+  // otherwise, set originalFilePath when it's not already set.
+  const base = path.basename(filePath || '');
+  const isTempPreview = /print-shop-(nup|preview|merged)-/.test(base);
+  if (!isTempPreview && !tab.originalFilePath) {
+    tab.originalFilePath = filePath;
+  }
   tab.filePath = filePath;
-  tab.isPreview = true;
+  tab.isPreview = Boolean(isTempPreview);
 
   const fileUrl = `file:///${filePath.replace(/\\/g, '/')}`;
   try {
