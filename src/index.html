@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Print Shop</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="tabbar">
+    <div id="tabs-list"></div>
+    <button id="new-tab-btn" title="Ctrl+O">+</button>
+    <div id="dropzone-hint" data-i18n="dropHint">Drop PDF files here or click +</div>
+    <div class="toolbar-spacer"></div>
+    <select id="language-select">
+      <option value="en">English</option>
+      <option value="ar">العربية</option>
+      <option value="tr">Türkçe (soon)</option>
+      <option value="de">Deutsch (soon)</option>
+    </select>
+  </div>
+
+  <div id="toolbar">
+    <div class="toolbar-group">
+      <label data-i18n="printer">Printer</label>
+      <select id="printer-select"></select>
+    </div>
+    <div class="toolbar-group">
+      <label data-i18n="pages">Pages</label>
+      <select id="pages-mode-select">
+        <option value="all" data-i18n="all">All</option>
+        <option value="custom" data-i18n="custom">Custom</option>
+      </select>
+      <input type="text" id="pages-range-input" placeholder="e.g. 1-5, 8, 11-13" class="hidden" />
+    </div>
+    <div class="toolbar-group">
+      <label data-i18n="copies">Copies</label>
+      <input type="number" id="copies-input" min="1" value="1" />
+    </div>
+    <div class="toolbar-group">
+      <label data-i18n="color">Color</label>
+      <select id="color-select">
+        <option value="color" data-i18n="colorOpt">Color</option>
+        <option value="bw" data-i18n="bwOpt">Black &amp; white</option>
+      </select>
+    </div>
+    <div class="toolbar-group">
+      <label>Preset</label>
+      <select id="preset-select">
+        <option value="" data-i18n="none">— None —</option>
+      </select>
+      <button id="save-preset-btn" title="Save preset">💾</button>
+    </div>
+    <button id="more-settings-toggle"><span data-i18n="more">More</span> ▾</button>
+    <div class="toolbar-spacer"></div>
+    <div class="toolbar-group total-pages">
+      <span data-i18n="totalPages">Total pages</span>: <span id="total-pages-count">0</span>
+    </div>
+    <button id="history-btn" title="History">📜</button>
+    <button id="print-active-btn" class="primary-btn"><span data-i18n="print">Print</span> (Ctrl+P)</button>
+    <button id="print-all-btn" class="primary-btn" data-i18n="printAll">Print all</button>
+  </div>
+
+  <div id="more-settings" class="hidden">
+    <div class="toolbar-group">
+      <label data-i18n="paperSize">Paper size</label>
+      <select id="paper-size-select">
+        <option value="Letter">Letter</option>
+        <option value="Tabloid">Tabloid</option>
+        <option value="Legal">Legal</option>
+        <option value="A3">A3</option>
+        <option value="A4" selected>A4</option>
+        <option value="A5">A5</option>
+      </select>
+    </div>
+    <div class="toolbar-group">
+      <label data-i18n="pagesPerSheet">Pages per sheet</label>
+      <select id="pages-per-sheet-select" title="Requires running as Administrator">
+        <option value="1" selected>1</option>
+        <option value="2">2</option>
+        <option value="4">4</option>
+        <option value="6">6</option>
+        <option value="9">9</option>
+        <option value="16">16</option>
+      </select>
+    </div>
+    <div class="toolbar-group">
+      <label data-i18n="quality">Quality</label>
+      <select id="quality-select" title="Requires running as Administrator">
+        <option value="0" selected data-i18n="qualityAuto">Automatic (printer default)</option>
+        <option value="300">300 dpi</option>
+        <option value="600">600 dpi</option>
+        <option value="1200">1200 dpi</option>
+      </select>
+    </div>
+    <div class="toolbar-group">
+      <label data-i18n="scale">Scale</label>
+      <select id="scale-mode-select">
+        <option value="default">Default</option>
+        <option value="fit-printable">Fit to printable area</option>
+        <option value="fit-paper" selected>Fit to paper</option>
+        <option value="custom">Custom</option>
+      </select>
+      <input type="number" id="scale-custom-input" min="10" max="200" value="100" class="hidden" disabled data-i18n-title="notSupported" />
+    </div>
+    <div class="toolbar-group checkbox-group">
+      <label><input type="checkbox" id="duplex-checkbox" /> <span data-i18n="duplex">Print on both sides</span></label>
+      <select id="duplex-flip-select" class="hidden">
+        <option value="long" data-i18n="flipLong">Flip on long edge</option>
+        <option value="short" data-i18n="flipShort">Flip on short edge</option>
+      </select>
+    </div>
+    <div class="admin-note" data-i18n="adminNote">⚠️ Pages-per-sheet and Quality require running as Administrator</div>
+  </div>
+
+  <div id="empty-state">
+    <p data-i18n="emptyHint">Open a PDF to get started</p>
+    <button id="empty-open-btn" data-i18n="openPdf">Open PDF</button>
+  </div>
+
+  <!-- Tab right-click context menu -->
+  <div id="tab-context-menu" class="context-menu hidden">
+    <div class="context-item" data-action="duplicate" data-i18n="duplicateTab">Duplicate tab</div>
+    <div class="context-item" data-action="lock" data-i18n="lockTab">Lock tab</div>
+    <div class="context-item" data-action="close" data-i18n="closeTab">Close tab</div>
+  </div>
+
+  <!-- History side panel -->
+  <div id="history-panel" class="panel hidden">
+    <div class="panel-header">
+      <h3 data-i18n="printHistory">Print history</h3>
+      <button id="close-history-btn">✕</button>
+    </div>
+    <button id="clear-history-btn" data-i18n="clearHistory">Clear history</button>
+    <div id="history-list"></div>
+  </div>
+
+  <!-- Save Preset modal -->
+  <div id="preset-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3 data-i18n="savePreset">Save a new print preset</h3>
+      <input type="text" id="preset-name-input" placeholder="Preset name (e.g. Department signs)" />
+      <div class="modal-actions">
+        <button id="preset-cancel-btn" data-i18n="cancel">Cancel</button>
+        <button id="preset-confirm-btn" class="primary-btn" data-i18n="save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Large file confirm modal -->
+  <div id="confirm-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3 data-i18n="confirmPrint">Confirm print</h3>
+      <p id="confirm-text"></p>
+      <div class="modal-actions">
+        <button id="confirm-cancel-btn" data-i18n="cancel">Cancel</button>
+        <button id="confirm-ok-btn" class="primary-btn" data-i18n="print">Print</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="translations.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>
