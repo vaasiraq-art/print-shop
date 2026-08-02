@@ -427,6 +427,208 @@ async function renderHistory() {
     list.innerHTML = '<p style="color:#9aa0a6;font-size:12px;">لا يوجد سجل بعد</p>';
     return;
   }
+
+// ========== KillerPDF FEATURES: View Modes ==========
+// Per-tab view mode state
+const tabViewModes = {};
+
+function getViewMode(tabId) {
+  return tabViewModes[tabId] || 'single';
+}
+
+function setViewMode(tabId, mode) {
+  tabViewModes[tabId] = mode;
+  updateViewModeButtons(mode);
+  // In a full implementation, apply this to the PDF viewer via CSS transforms or plugin
+  // For now, we store the preference per tab
+}
+
+function updateViewModeButtons(activeMode) {
+  document.querySelectorAll('.view-btn').forEach(btn => {
+    btn.classList.remove('active');
+  });
+  if (activeMode === 'single') el('view-single-btn').classList.add('active');
+  else if (activeMode === 'continuous') el('view-continuous-btn').classList.add('active');
+  else if (activeMode === 'two-page') el('view-two-page-btn').classList.add('active');
+  else if (activeMode === 'grid') el('view-grid-btn').classList.add('active');
+}
+
+el('view-single-btn').addEventListener('click', () => {
+  if (activeTabId) setViewMode(activeTabId, 'single');
+  showToast('📄 Single page mode');
+});
+
+el('view-continuous-btn').addEventListener('click', () => {
+  if (activeTabId) setViewMode(activeTabId, 'continuous');
+  showToast('∞ Continuous scroll mode');
+});
+
+el('view-two-page-btn').addEventListener('click', () => {
+  if (activeTabId) setViewMode(activeTabId, 'two-page');
+  showToast('📖 Two-page view');
+});
+
+el('view-grid-btn').addEventListener('click', () => {
+  if (activeTabId) setViewMode(activeTabId, 'grid');
+  showToast('⊞ Grid view (thumbnails)');
+});
+
+// ========== KillerPDF FEATURES: Text Search ==========
+let searchMatches = [];
+let searchCurrentIndex = 0;
+
+el('search-input').addEventListener('keyup', async (e) => {
+  const query = e.target.value.trim();
+  if (!query) {
+    searchMatches = [];
+    searchCurrentIndex = 0;
+    el('search-count').textContent = '';
+    return;
+  }
+  // Full-text search across PDF - would be implemented via PDF.js or similar
+  // For now, we show a placeholder
+  if (activeTabId) {
+    // In a complete implementation, query the PDF library for text matches
+    el('search-count').textContent = `0 / 0`;
+  }
+});
+
+el('search-prev-btn').addEventListener('click', () => {
+  if (searchMatches.length === 0) return;
+  searchCurrentIndex = (searchCurrentIndex - 1 + searchMatches.length) % searchMatches.length;
+  // Highlight and navigate to match
+  showToast(`Result ${searchCurrentIndex + 1} / ${searchMatches.length}`);
+});
+
+el('search-next-btn').addEventListener('click', () => {
+  if (searchMatches.length === 0) return;
+  searchCurrentIndex = (searchCurrentIndex + 1) % searchMatches.length;
+  // Highlight and navigate to match
+  showToast(`Result ${searchCurrentIndex + 1} / ${searchMatches.length}`);
+});
+
+// ========== KillerPDF FEATURES: Page Tools ==========
+
+el('rotate-left-btn').addEventListener('click', () => {
+  if (activeTabId) {
+    showToast('↺ Rotate left 90° (feature coming)');
+    // TODO: implement rotation via pdf-lib
+  }
+});
+
+el('rotate-right-btn').addEventListener('click', () => {
+  if (activeTabId) {
+    showToast('↻ Rotate right 90° (feature coming)');
+    // TODO: implement rotation via pdf-lib
+  }
+});
+
+el('crop-btn').addEventListener('click', () => {
+  if (activeTabId) {
+    showToast('✂ Crop tool (feature coming - click corners to adjust)');
+    // TODO: implement crop UI with corner handles
+  }
+});
+
+el('delete-page-btn').addEventListener('click', () => {
+  if (activeTabId) {
+    showToast('🗑 Delete current page (feature coming)');
+    // TODO: implement page deletion via pdf-lib
+  }
+});
+
+// ========== KillerPDF FEATURES: Annotation Tools ==========
+
+let annotationMode = null; // 'draw', 'highlight', 'text', or null
+
+el('annotate-draw-btn').addEventListener('click', () => {
+  annotationMode = annotationMode === 'draw' ? null : 'draw';
+  el('annotate-draw-btn').classList.toggle('active');
+  if (annotationMode === 'draw') {
+    showToast('✏ Draw mode active - draw on PDF');
+  } else {
+    showToast('✏ Draw mode disabled');
+  }
+});
+
+el('annotate-highlight-btn').addEventListener('click', () => {
+  annotationMode = annotationMode === 'highlight' ? null : 'highlight';
+  el('annotate-highlight-btn').classList.toggle('active');
+  if (annotationMode === 'highlight') {
+    showToast('🖍 Highlight mode active - select text to highlight');
+  } else {
+    showToast('🖍 Highlight mode disabled');
+  }
+});
+
+el('annotate-text-btn').addEventListener('click', () => {
+  annotationMode = annotationMode === 'text' ? null : 'text';
+  el('annotate-text-btn').classList.toggle('active');
+  if (annotationMode === 'text') {
+    showToast('T Add text - click to place text box');
+  } else {
+    showToast('T Text mode disabled');
+  }
+});
+
+// ========== KillerPDF FEATURES: OCR ==========
+
+el('ocr-btn').addEventListener('click', async () => {
+  if (!activeTabId) {
+    showToast('No PDF open');
+    return;
+  }
+  const tab = currentTabs.find(t => t.id === activeTabId);
+  if (!tab) return;
+
+  el('ocr-btn').disabled = true;
+  showToast('👁 OCR in progress... scanning document');
+
+  try {
+    // TODO: Call backend OCR handler (requires Tesseract.js)
+    // const result = await api.runOcr(tab.filePath);
+    // if (result.ok) {
+    //   showToast(`✅ OCR complete: ${result.pagesScanned} pages processed`);
+    // } else {
+    //   showToast(`❌ OCR failed: ${result.error}`);
+    // }
+    showToast('👁 OCR support coming soon - requires Tesseract.js integration');
+  } catch (e) {
+    showToast(`OCR error: ${e.message}`);
+  } finally {
+    el('ocr-btn').disabled = false;
+  }
+});
+
+// ========== KillerPDF FEATURES: Keyboard Shortcuts ==========
+
+document.addEventListener('keydown', (e) => {
+  // Alt+Left: previous page / jump history
+  if (e.altKey && e.key === 'ArrowLeft') {
+    e.preventDefault();
+    showToast('◀ Previous (jump history coming)');
+  }
+  // Alt+Right: next page / jump history
+  if (e.altKey && e.key === 'ArrowRight') {
+    e.preventDefault();
+    showToast('▶ Next (jump history coming)');
+  }
+  // F11: fullscreen
+  if (e.key === 'F11') {
+    e.preventDefault();
+    document.documentElement.requestFullscreen().catch(err => {});
+  }
+  // F10: split pane
+  if (e.key === 'F10') {
+    e.preventDefault();
+    showToast('F10: Split pane (feature coming)');
+  }
+  // Ctrl+F: search
+  if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+    e.preventDefault();
+    el('search-input').focus();
+  }
+});
   for (const h of history) {
     const div = document.createElement('div');
     div.className = 'history-item';

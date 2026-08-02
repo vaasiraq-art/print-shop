@@ -45,7 +45,27 @@ const TRANSLATIONS = {
     qualityHigh: 'High (~600-1200dpi)',
     adminNote: '⚠️ Pages-per-sheet and Quality require running as Administrator',
     advancedConfigWarning:
-      "Pages-per-sheet/Quality didn't apply — run the app as Administrator, or this printer's driver may not support it. The rest of the print settings still went through."
+      "Pages-per-sheet/Quality didn't apply — run the app as Administrator, or this printer's driver may not support it. The rest of the print settings still went through.",
+    // KillerPDF Features
+    viewMode: 'View Mode',
+    singlePage: 'Single Page',
+    continuous: 'Continuous Scroll',
+    twoPage: 'Two-Page View',
+    gridView: 'Grid View',
+    search: 'Search',
+    previous: 'Previous',
+    next: 'Next',
+    rotateLeft: 'Rotate Left',
+    rotateRight: 'Rotate Right',
+    crop: 'Crop',
+    deletePage: 'Delete Page',
+    draw: 'Draw',
+    highlight: 'Highlight',
+    addText: 'Add Text',
+    ocr: 'OCR (Make Searchable)',
+    pinTab: 'Pin tab',
+    unpinTab: 'Unpin tab',
+    hideTab: 'Hide tab'
   },
   ar: {
     dropHint: 'اسحب ملفات PDF هنا أو اضغط +',

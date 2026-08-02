@@ -1075,6 +1075,96 @@ ipcMain.handle('load-original-in-active-tab', async () => {
   return { ok: true };
 });
 
+// ========== KillerPDF FEATURES: Page Tools ==========
+
+ipcMain.handle('rotate-pages', async (event, { filePath, pages, direction }) => {
+  try {
+    const buffer = await fs.promises.readFile(filePath);
+    const doc = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const totalPages = doc.getPageCount();
+    
+    // Parse pages (e.g., "1,3,5-7")
+    const pageSet = new Set();
+    for (const part of pages.split(',')) {
+      const trimmed = part.trim();
+      if (trimmed.includes('-')) {
+        const [start, end] = trimmed.split('-').map(s => parseInt(s.trim(), 10));
+        for (let i = start; i <= end && i <= totalPages; i++) pageSet.add(i - 1);
+      } else {
+        const p = parseInt(trimmed, 10);
+        if (p > 0 && p <= totalPages) pageSet.add(p - 1);
+      }
+    }
+
+    // Rotate pages (90, 180, 270 degrees)
+    const angle = direction === 'left' ? -90 : 90;
+    for (const pageIdx of pageSet) {
+      const page = doc.getPage(pageIdx);
+      const currentRotation = page.getRotation().angle || 0;
+      const newRotation = (currentRotation + angle) % 360;
+      page.setRotation(newRotation);
+    }
+
+    const rotatedBuffer = await doc.save();
+    const tempPath = path.join(os.tmpdir(), `print-shop-rotated-${Date.now()}.pdf`);
+    await fs.promises.writeFile(tempPath, rotatedBuffer);
+    return { ok: true, path: tempPath };
+  } catch (e) {
+    console.error('Error rotating pages:', e);
+    return { ok: false, error: String(e) };
+  }
+});
+
+ipcMain.handle('delete-pages', async (event, { filePath, pages }) => {
+  try {
+    const buffer = await fs.promises.readFile(filePath);
+    const doc = await PDFDocument.load(buffer, { ignoreEncryption: true });
+    const totalPages = doc.getPageCount();
+
+    // Parse pages to delete
+    const pageSet = new Set();
+    for (const part of pages.split(',')) {
+      const trimmed = part.trim();
+      if (trimmed.includes('-')) {
+        const [start, end] = trimmed.split('-').map(s => parseInt(s.trim(), 10));
+        for (let i = start; i <= end && i <= totalPages; i++) pageSet.add(i - 1);
+      } else {
+        const p = parseInt(trimmed, 10);
+        if (p > 0 && p <= totalPages) pageSet.add(p - 1);
+      }
+    }
+
+    // Create new doc without deleted pages
+    const newDoc = await PDFDocument.create();
+    for (let i = 0; i < totalPages; i++) {
+      if (!pageSet.has(i)) {
+        const [copiedPage] = await newDoc.copyPages(doc, [i]);
+        newDoc.addPage(copiedPage);
+      }
+    }
+
+    const resultBuffer = await newDoc.save();
+    const tempPath = path.join(os.tmpdir(), `print-shop-deleted-${Date.now()}.pdf`);
+    await fs.promises.writeFile(tempPath, resultBuffer);
+    return { ok: true, path: tempPath, pagesRemoved: pageSet.size, pagesRemaining: totalPages - pageSet.size };
+  } catch (e) {
+    console.error('Error deleting pages:', e);
+    return { ok: false, error: String(e) };
+  }
+});
+
+// ========== KillerPDF FEATURES: OCR (Placeholder) ==========
+
+ipcMain.handle('run-ocr', async (event, { filePath }) => {
+  try {
+    // TODO: Integrate Tesseract.js for OCR
+    // For now, return a placeholder response
+    return { ok: false, error: 'OCR requires Tesseract.js installation (npm install tesseract.js)' };
+  } catch (e) {
+    return { ok: false, error: String(e) };
+  }
+});
+
 app.whenReady().then(createMainWindow);
 
 app.on('window-all-closed', () => {
