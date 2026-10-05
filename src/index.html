@@ -27,6 +27,39 @@
   </div>
 
   <div id="toolbar">
+    <!-- View Mode Controls (KillerPDF feature) -->
+    <div class="toolbar-group view-controls">
+      <label title="View mode">👁️</label>
+      <button id="view-single-btn" class="view-btn active" title="Single page">1</button>
+      <button id="view-continuous-btn" class="view-btn" title="Continuous scroll">∞</button>
+      <button id="view-two-page-btn" class="view-btn" title="Two-page view">2</button>
+      <button id="view-grid-btn" class="view-btn" title="Grid view">⊞</button>
+    </div>
+
+    <!-- Search & Tools (KillerPDF feature) -->
+    <div class="toolbar-group search-controls">
+      <input type="text" id="search-input" placeholder="🔍 Search..." class="search-box" />
+      <button id="search-prev-btn" title="Previous match">◀</button>
+      <button id="search-next-btn" title="Next match">▶</button>
+      <span id="search-count" class="search-count"></span>
+    </div>
+
+    <!-- Page Tools (KillerPDF feature) -->
+    <div class="toolbar-group page-tools">
+      <button id="rotate-left-btn" title="Rotate left">⟲</button>
+      <button id="rotate-right-btn" title="Rotate right">⟳</button>
+      <button id="crop-btn" title="Crop page">✂</button>
+      <button id="delete-page-btn" title="Delete page">🗑</button>
+    </div>
+
+    <!-- Annotation Tools (KillerPDF feature) -->
+    <div class="toolbar-group annotation-tools">
+      <button id="annotate-draw-btn" title="Draw">✏</button>
+      <button id="annotate-highlight-btn" title="Highlight">🖍</button>
+      <button id="annotate-text-btn" title="Add text">T</button>
+      <button id="ocr-btn" title="OCR scan">👁 OCR</button>
+    </div>
+
     <div class="toolbar-group">
       <label data-i18n="printer">Printer</label>
       <select id="printer-select"></select>
